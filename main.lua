@@ -487,7 +487,7 @@ local function moveToPositionVelocity(targetPos)
         previousPos = currentPos
         if distToTarget <= stopThreshold then arrived = true; return end
         local speedFactor = math.clamp(distToTarget / 40, 0.25, 1)
-        local currentSpeed = CONFIG.SPEED * speedFactor
+        local currentSpeed = CONFIG.Speed * speedFactor
                     local direction = (targetPosWithHeight - currentPos)
         bodyVel.Velocity = direction.Unit * currentSpeed
         bodyGyro.CFrame = CFrame.lookAt(currentPos, Vector3.new(targetPosWithHeight.X, currentPos.Y, targetPosWithHeight.Z))
