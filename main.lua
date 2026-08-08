@@ -1,8 +1,6 @@
 -- RORD | Auto Script
-
 local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
 
--- Custom Theme
 WindUI:AddTheme({
     Name = "RORD",
     Accent = Color3.fromHex("#ff6b00"),
@@ -45,7 +43,6 @@ WindUI:AddTheme({
     SliderThumb = Color3.fromHex("#ffffff"),
 })
 
--- Window
 local Window = WindUI:CreateWindow({
     Title = "⚡ RORD",
     Icon = "monitor",
@@ -84,12 +81,10 @@ Window:Tag({
     Radius = 10,
 })
 
--- Tabs
 local ReadTab = Window:Tab({ Title = "Read", Icon = "triangle-alert" })
 local MainTab = Window:Tab({ Title = "Auto Farm", Icon = "bot" })
 local MiscTab = Window:Tab({ Title = "Misc", Icon = "sliders-horizontal" })
 
--- Variables
 local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local RunService = game:GetService("RunService")
@@ -151,7 +146,6 @@ local postSellWaypoints = {
     Vector3.new(6805.6, 17.4, -34.4)
 }
 
--- Path system
 local pathFolder = workspace:FindFirstChild("RORD_Path") or Instance.new("Folder")
 pathFolder.Name = "RORD_Path"
 pathFolder.Parent = workspace
@@ -219,7 +213,6 @@ local function drawForwardPath(waypoints, currentIndex)
     end)
 end
 
--- Movement & interaction functions
 local function applyAntiPause(state)
     antiPauseActive = state
     if state then
@@ -318,7 +311,6 @@ local function applyFPSBoost(state)
     end
 end
 
--- Target finders
 local function findTarget(keyword)
     local key = string.lower(keyword)
     for _, prompt in ipairs(workspace:GetDescendants()) do
@@ -328,7 +320,8 @@ local function findTarget(keyword)
             local parentName = string.lower(prompt.Parent and prompt.Parent.Name or "")
             if string.find(objText, key) or string.find(actText, key) or string.find(parentName, key) then
                 local targetPart = prompt:FindFirstAncestorWhichIsA("BasePart") or prompt.Parent
-                if targetPart:IsA("BasePart") then return targetPart, prompt
+                if targetPart:IsA("BasePart") then 
+                    return targetPart, prompt
                 elseif targetPart:IsA("Model") then
                     local part = targetPart.PrimaryPart or targetPart:FindFirstChildWhichIsA("BasePart", true)
                     if part then return part, prompt end
@@ -354,7 +347,11 @@ local function findNearestTargetToPos(keyword, pos)
                     local part = targetPart:IsA("BasePart") and targetPart or targetPart.PrimaryPart or targetPart:FindFirstChildWhichIsA("BasePart", true)
                     if part then
                         local dist = (pos - part.Position).Magnitude
-                        if dist < minDistance then minDistance = dist; nearestPart = part; nearestPrompt = prompt end
+                        if dist < minDistance then 
+                            minDistance = dist
+                            nearestPart = part
+                            nearestPrompt = prompt
+                        end
                     end
                 end
             end
@@ -490,7 +487,7 @@ local function moveToPositionVelocity(targetPos)
         previousPos = currentPos
         if distToTarget <= stopThreshold then arrived = true; return end
         local speedFactor = math.clamp(distToTarget / 40, 0.25, 1)
-        local currentSpeed = CONFIG.Speed
+        local currentSpeed = CONFIG.SPEED * speedFactor
                     local direction = (targetPosWithHeight - currentPos)
         bodyVel.Velocity = direction.Unit * currentSpeed
         bodyGyro.CFrame = CFrame.lookAt(currentPos, Vector3.new(targetPosWithHeight.X, currentPos.Y, targetPosWithHeight.Z))
@@ -675,7 +672,89 @@ local function getItemCount(itemName)
     return count
 end
 
--- UI Elements for MainTab (добавь их в свой код)
+local function mainLoop()
+    local savedBuyPart, savedBuyPrompt = nil, nil
+
+    while isRunning do
+        if getItemCount(CONFIG.ItemName) < CONFIG.Amount then
+            if not savedBuyPart or not savedBuyPart.Parent then 
+                savedBuyPart, savedBuyPrompt = findTarget(CONFIG.ItemName) 
+            end
+
+            if savedBuyPart then
+                getInVehicle()
+                if goToTarget(savedBuyPart) then
+                    local buyTimeout = 0
+                    while isRunning and getItemCount(CONFIG.ItemName) < CONFIG.Amount and buyTimeout < 40 do
+                        interactWith(savedBuyPart, savedBuyPrompt)
+                        task.wait(0.05)
+                        buyTimeout = buyTimeout + 1
+                    end
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        if not isRunning then break end
+        processWaypoints(postBuyWaypoints, "Post-Buy Route")
+        if not isRunning then break end
+
+        if autoSell and getItemCount(CONFIG.ItemName) > 0 then
+            local lastBuyPos = postBuyWaypoints[#postBuyWaypoints]
+            local sellPart, sellPrompt = findNearestTargetToPos(CONFIG.SellName, lastBuyPos)
+            if not sellPart then 
+                sellPart, sellPrompt = findNearestTargetToPos("Smuggle", lastBuyPos) 
+            end
+
+            if sellPart then
+                getInVehicle()
+                if goToTarget(sellPart) then
+                    local sellAttempts = 0
+                    while isRunning and getItemCount(CONFIG.ItemName) > 0 and sellAttempts < 35 do
+                        interactWith(sellPart, sellPrompt)
+                        task.wait(0.08)
+                        sellAttempts = sellAttempts + 1
+                    end
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        if not isRunning then break end
+        processWaypoints(postSellWaypoints, "Post-Sell Route")
+        if not isRunning then break end
+
+        if autoLaunder then
+            local launderPart, launderPrompt = findTarget(CONFIG.LaunderName)
+            if launderPart then
+                getInVehicle()
+                if goToTarget(launderPart) then
+                    local launderAttempts = 0
+                    while isRunning and getProcessableItemCount() > 0 and launderAttempts < 40 do
+                        interactWith(launderPart, launderPrompt)
+                        task.wait(0.08)
+                        launderAttempts = launderAttempts + 1
+                    end
+                    task.wait(0.1)
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        task.wait(0.1)
+    end
+    clearWaylines()
+end
+
+ReadTab:Paragraph({ Title = "⚠️ RORD", Content = "Auto Farm for San Diego" })
+ReadTab:Paragraph({ Title = "ℹ️", Content = "Configure and start in Auto Farm tab" })
+
 MainTab:Toggle({
     Title = "Auto Farm",
     Desc = "",
@@ -791,7 +870,6 @@ MainTab:Dropdown({
     end
 })
 
--- Misc UI Elements
 MiscTab:Toggle({
     Title = "Boost FPS",
     Desc = "",
@@ -904,89 +982,5 @@ MiscTab:Colorpicker({
         pathColor2 = color
     end
 })
-
--- Main Loop Function
-local function mainLoop()
-    local savedBuyPart, savedBuyPrompt = nil, nil
-
-    while isRunning do
-        -- 1. BUY LOGIC
-        if getItemCount(CONFIG.ItemName) < CONFIG.Amount then
-            if not savedBuyPart or not savedBuyPart.Parent then 
-                savedBuyPart, savedBuyPrompt = findTarget(CONFIG.ItemName) 
-            end
-
-            if savedBuyPart then
-                getInVehicle()
-                if goToTarget(savedBuyPart) then
-                    local buyTimeout = 0
-                    while isRunning and getItemCount(CONFIG.ItemName) < CONFIG.Amount and buyTimeout < 40 do
-                        interactWith(savedBuyPart, savedBuyPrompt)
-                        task.wait(0.05)
-                        buyTimeout = buyTimeout + 1
-                    end
-                    getInVehicle()
-                end
-            else
-                task.wait(0.5)
-            end
-        end
-
-        if not isRunning then break end
-        processWaypoints(postBuyWaypoints, "Post-Buy Route")
-        if not isRunning then break end
-
-        -- 2. SELL LOGIC
-        if autoSell and getItemCount(CONFIG.ItemName) > 0 then
-            local lastBuyPos = postBuyWaypoints[#postBuyWaypoints]
-            local sellPart, sellPrompt = findNearestTargetToPos(CONFIG.SellName, lastBuyPos)
-            if not sellPart then 
-                sellPart, sellPrompt = findNearestTargetToPos("Smuggle", lastBuyPos) 
-            end
-
-            if sellPart then
-                getInVehicle()
-                if goToTarget(sellPart) then
-                    local sellAttempts = 0
-                    while isRunning and getItemCount(CONFIG.ItemName) > 0 and sellAttempts < 35 do
-                        interactWith(sellPart, sellPrompt)
-                        task.wait(0.08)
-                        sellAttempts = sellAttempts + 1
-                    end
-                    getInVehicle()
-                end
-            else
-                task.wait(0.5)
-            end
-        end
-
-        if not isRunning then break end
-        processWaypoints(postSellWaypoints, "Post-Sell Route")
-        if not isRunning then break end
-
-        -- 3. LAUNDER LOGIC
-        if autoLaunder then
-            local launderPart, launderPrompt = findTarget(CONFIG.LaunderName)
-            if launderPart then
-                getInVehicle()
-                if goToTarget(launderPart) then
-                    local launderAttempts = 0
-                    while isRunning and getProcessableItemCount() > 0 and launderAttempts < 40 do
-                        interactWith(launderPart, launderPrompt)
-                        task.wait(0.08)
-                        launderAttempts = launderAttempts + 1
-                    end
-                    task.wait(0.1)
-                    getInVehicle()
-                end
-            else
-                task.wait(0.5)
-            end
-        end
-
-        task.wait(0.1)
-    end
-    clearWaylines()
-end
 
 print("✅ RORD Auto Farm loaded successfully")
