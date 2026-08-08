@@ -491,3 +491,502 @@ local function moveToPositionVelocity(targetPos)
         if distToTarget <= stopThreshold then arrived = true; return end
         local speedFactor = math.clamp(distToTarget / 40, 0.25, 1)
         local currentSpeed = CONFIG.Speed
+                    local direction = (targetPosWithHeight - currentPos)
+        bodyVel.Velocity = direction.Unit * currentSpeed
+        bodyGyro.CFrame = CFrame.lookAt(currentPos, Vector3.new(targetPosWithHeight.X, currentPos.Y, targetPosWithHeight.Z))
+    end)
+
+    while isRunning and not arrived and not rubberbandDetected do
+        task.wait(0.01)
+    end
+
+    if noclipConnection then noclipConnection:Disconnect() end
+    if renderConnection then renderConnection:Disconnect() end
+    bodyVel:Destroy()
+    bodyGyro:Destroy()
+    floatPart:Destroy()
+
+    if movePart and movePart.Parent then
+        movePart.AssemblyLinearVelocity = Vector3.zero
+        movePart.AssemblyAngularVelocity = Vector3.zero
+    end
+    if player.Character then
+        for _, part in ipairs(player.Character:GetDescendants()) do
+            if part:IsA("BasePart") then
+                part.CanCollide = true
+            end
+        end
+    end
+    return arrived, rubberbandDetected
+end
+
+local function moveToTargetVelocity(targetPart)
+    if not targetPart then return false end
+    local arrived, rubberband = moveToPositionVelocity(targetPart.Position)
+    return arrived
+end
+
+local function tweenToInteract(targetPart)
+    local char = player.Character
+    if not char then return false end
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp or not humanoid then return false end
+
+    local seat = humanoid.SeatPart
+    local vehicleModel = getVehicleModel(seat)
+    local groundTargetCFrame = targetPart.CFrame + Vector3.new(0, 3, 0)
+
+    if seat and vehicleModel then
+        local duration = math.clamp((vehicleModel.PrimaryPart.Position - targetPart.Position).Magnitude / 80, 0.15, 0.8)
+        local cframeValue = Instance.new("CFrameValue")
+        cframeValue.Value = vehicleModel:GetPivot()
+        local tween = TweenService:Create(cframeValue, TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Value = groundTargetCFrame})
+        local conn = cframeValue.Changed:Connect(function(newCFrame)
+            if vehicleModel and vehicleModel.Parent then
+                vehicleModel:PivotTo(newCFrame)
+            end
+        end)
+        tween:Play()
+        task.wait(duration)
+        conn:Disconnect()
+        cframeValue:Destroy()
+        if CONFIG.TweenDelay > 0 then task.wait(CONFIG.TweenDelay) end
+        dismountVehicle()
+        return true
+    else
+        local duration = math.clamp((hrp.Position - targetPart.Position).Magnitude / 80, 0.15, 0.8)
+        local tween = TweenService:Create(hrp, TweenInfo.new(duration, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame = groundTargetCFrame})
+        tween:Play()
+        task.wait(duration)
+        if CONFIG.TweenDelay > 0 then task.wait(CONFIG.TweenDelay) end
+        return true
+    end
+end
+
+local function goToTarget(targetPart)
+    local reached = moveToTargetVelocity(targetPart)
+    if not reached or not isRunning then return false end
+    return tweenToInteract(targetPart)
+end
+
+local function processWaypoints(waypoints, labelPrefix)
+    local currentIndex = 1
+    while isRunning and currentIndex <= #waypoints do
+        if currentIndex == 1 then getInVehicle() end
+        drawForwardPath(waypoints, currentIndex)
+        local targetPos = waypoints[currentIndex]
+        local arrived, rubberbandDetected = moveToPositionVelocity(targetPos)
+        if rubberbandDetected then
+            task.wait(0.3)
+            local char = player.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local nearestIdx = getNearestWaypointIndex(waypoints, hrp.Position)
+                currentIndex = nearestIdx
+                local safeTargetPos = waypoints[nearestIdx] + Vector3.new(0, CONFIG.Height, 0)
+                local movePart = hrp
+                local humanoid = char:FindFirstChildOfClass("Humanoid")
+                if humanoid and humanoid.SeatPart then
+                    local vModel = getVehicleModel(humanoid.SeatPart)
+                    if vModel then movePart = vModel.PrimaryPart or humanoid.SeatPart end
+                end
+                local recoverTween = TweenService:Create(movePart, TweenInfo.new(0.5, Enum.EasingStyle.Sine, Enum.EasingDirection.Out), {CFrame = CFrame.new(safeTargetPos)})
+                recoverTween:Play()
+                recoverTween.Completed:Wait()
+                task.wait(0.1)
+            end
+        elseif arrived then
+            currentIndex = currentIndex + 1
+        end
+    end
+    clearWaylines()
+end
+
+local function interactWith(targetPart, prompt)
+    local activePrompt = prompt 
+        or (targetPart and targetPart:FindFirstChildOfClass("ProximityPrompt")) 
+        or (targetPart and targetPart.Parent and targetPart.Parent:FindFirstChildOfClass("ProximityPrompt")) 
+        or (targetPart and targetPart:FindFirstChildWhichIsA("ProximityPrompt", true))
+
+    if activePrompt then
+        activePrompt.HoldDuration = 0
+        if fireproximityprompt then
+            fireproximityprompt(activePrompt)
+        else
+            pcall(function()
+                activePrompt:InputHoldBegin()
+                task.wait(0.01)
+                activePrompt:InputHoldEnd()
+            end)
+        end
+        return true
+    end
+
+    local clickDetector = (targetPart and targetPart:FindFirstChildOfClass("ClickDetector")) 
+        or (targetPart and targetPart.Parent and targetPart.Parent:FindFirstChildOfClass("ClickDetector")) 
+        or (targetPart and targetPart:FindFirstChildWhichIsA("ClickDetector", true))
+
+    if clickDetector and fireclickdetector then
+        fireclickdetector(clickDetector)
+        return true
+    end
+    return false
+end
+
+local function getProcessableItemCount()
+    local count = 0
+    if player:FindFirstChild("Backpack") then
+        for _, item in ipairs(player.Backpack:GetChildren()) do
+            if item:IsA("Tool") and not isProtectedItem(item.Name) then
+                count = count + 1
+            end
+        end
+    end
+    local char = player.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            if item:IsA("Tool") and not isProtectedItem(item.Name) then
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+local function getItemCount(itemName)
+    local count = 0
+    local key = string.lower(itemName)
+    if player:FindFirstChild("Backpack") then
+        for _, item in ipairs(player.Backpack:GetChildren()) do
+            if string.find(string.lower(item.Name), key) then
+                count = count + 1
+            end
+        end
+    end
+    local char = player.Character
+    if char then
+        for _, item in ipairs(char:GetChildren()) do
+            if string.find(string.lower(item.Name), key) then
+                count = count + 1
+            end
+        end
+    end
+    return count
+end
+
+-- UI Elements for MainTab (добавь их в свой код)
+MainTab:Toggle({
+    Title = "Auto Farm",
+    Desc = "",
+    Icon = "power",
+    Type = "Toggle",
+    Value = isRunning,
+    Callback = function(state)
+        isRunning = state
+        if isRunning then
+            task.spawn(mainLoop)
+        else
+            clearWaylines()
+        end
+    end
+})
+
+MainTab:Toggle({
+    Title = "Auto Sell Goods",
+    Desc = "",
+    Icon = "store",
+    Type = "Toggle",
+    Value = autoSell,
+    Callback = function(state)
+        autoSell = state
+    end
+})
+
+MainTab:Toggle({
+    Title = "Auto Launder Cash",
+    Desc = "",
+    Icon = "banknote",
+    Type = "Toggle",
+    Value = autoLaunder,
+    Callback = function(state)
+        autoLaunder = state
+    end
+})
+
+MainTab:Slider({
+    Title = "Fly Speed",
+    Desc = "",
+    Icon = "gauge",
+    Step = 5,
+    Value = {
+        Min = 150,
+        Max = 300,
+        Default = CONFIG.Speed,
+    },
+    Callback = function(value)
+        CONFIG.Speed = value
+    end
+})
+
+MainTab:Slider({
+    Title = "Tween Height (Y)",
+    Desc = "",
+    Icon = "arrow-up-right",
+    Step = 0.1,
+    Value = {
+        Min = 1,
+        Max = 5,
+        Default = CONFIG.Height,
+    },
+    Callback = function(value)
+        CONFIG.Height = value
+    end
+})
+
+MainTab:Slider({
+    Title = "Target Amount",
+    Desc = "",
+    Icon = "boxes",
+    Step = 1,
+    Value = {
+        Min = 1,
+        Max = 5,
+        Default = CONFIG.Amount,
+    },
+    Callback = function(value)
+        CONFIG.Amount = value
+    end
+})
+
+MainTab:Slider({
+    Title = "Tween Delay (s)",
+    Desc = "",
+    Icon = "timer",
+    Step = 0.1,
+    Value = {
+        Min = 0,
+        Max = 5,
+        Default = CONFIG.TweenDelay,
+    },
+    Callback = function(value)
+        CONFIG.TweenDelay = value
+    end
+})
+
+MainTab:Dropdown({
+    Title = "Select Item",
+    Desc = "",
+    Icon = "package-search",
+    Values = {
+        "Crate Of Avacados",
+        "Wagyu Beef",
+        "Witches Brew",
+        "Fake Designer Sneakers",
+        "Fake Diamond Ring"
+    },
+    Value = CONFIG.ItemName,
+    Callback = function(selected)
+        CONFIG.ItemName = selected
+    end
+})
+
+-- Misc UI Elements
+MiscTab:Toggle({
+    Title = "Boost FPS",
+    Desc = "",
+    Icon = "cpu",
+    Type = "Toggle",
+    Value = fpsBoostActive,
+    Callback = function(state)
+        applyFPSBoost(state)
+    end
+})
+
+MiscTab:Toggle({
+    Title = "Anti Gameplay Paused",
+    Desc = "",
+    Icon = "shield-check",
+    Type = "Toggle",
+    Value = antiPauseActive,
+    Callback = function(state)
+        applyAntiPause(state)
+    end
+})
+
+MiscTab:Toggle({
+    Title = "No Render",
+    Desc = "",
+    Icon = "eye-off",
+    Type = "Toggle",
+    Value = noRenderActive,
+    Callback = function(state)
+        applyNoRender(state)
+    end
+})
+
+MiscTab:Toggle({
+    Title = "Show Path Line",
+    Desc = "Toggle visual path lines on/off",
+    Icon = "route",
+    Type = "Toggle",
+    Value = showPathLine,
+    Callback = function(state)
+        showPathLine = state
+        if not showPathLine then
+            clearWaylines()
+        end
+    end
+})
+
+MiscTab:Slider({
+    Title = "Path Glow Size",
+    Desc = "Adjust line thickness and glow width",
+    Icon = "sparkles",
+    Step = 0.1,
+    Value = {
+        Min = 0.1,
+        Max = 3.0,
+        Default = pathGlowSize,
+    },
+    Callback = function(value)
+        pathGlowSize = value
+        updateActiveBeams()
+    end
+})
+
+MiscTab:Slider({
+    Title = "Path Texture Length",
+    Desc = "Adjust line pattern stretch length",
+    Icon = "ruler",
+    Step = 0.1,
+    Value = {
+        Min = 0.5,
+        Max = 10.0,
+        Default = pathLength,
+    },
+    Callback = function(value)
+        pathLength = value
+        updateActiveBeams()
+    end
+})
+
+MiscTab:Slider({
+    Title = "Path Texture Speed",
+    Desc = "Adjust path animation flow speed",
+    Icon = "zap",
+    Step = 0.1,
+    Value = {
+        Min = 0.0,
+        Max = 10.0,
+        Default = pathSpeed,
+    },
+    Callback = function(value)
+        pathSpeed = value
+        updateActiveBeams()
+    end
+})
+
+MiscTab:Colorpicker({
+    Title = "Path Gradient Color 1",
+    Desc = "First color for animated path gradient",
+    Default = pathColor1,
+    Callback = function(color)
+        pathColor1 = color
+    end
+})
+
+MiscTab:Colorpicker({
+    Title = "Path Gradient Color 2",
+    Desc = "Second color for animated path gradient",
+    Default = pathColor2,
+    Callback = function(color)
+        pathColor2 = color
+    end
+})
+
+-- Main Loop Function
+local function mainLoop()
+    local savedBuyPart, savedBuyPrompt = nil, nil
+
+    while isRunning do
+        -- 1. BUY LOGIC
+        if getItemCount(CONFIG.ItemName) < CONFIG.Amount then
+            if not savedBuyPart or not savedBuyPart.Parent then 
+                savedBuyPart, savedBuyPrompt = findTarget(CONFIG.ItemName) 
+            end
+
+            if savedBuyPart then
+                getInVehicle()
+                if goToTarget(savedBuyPart) then
+                    local buyTimeout = 0
+                    while isRunning and getItemCount(CONFIG.ItemName) < CONFIG.Amount and buyTimeout < 40 do
+                        interactWith(savedBuyPart, savedBuyPrompt)
+                        task.wait(0.05)
+                        buyTimeout = buyTimeout + 1
+                    end
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        if not isRunning then break end
+        processWaypoints(postBuyWaypoints, "Post-Buy Route")
+        if not isRunning then break end
+
+        -- 2. SELL LOGIC
+        if autoSell and getItemCount(CONFIG.ItemName) > 0 then
+            local lastBuyPos = postBuyWaypoints[#postBuyWaypoints]
+            local sellPart, sellPrompt = findNearestTargetToPos(CONFIG.SellName, lastBuyPos)
+            if not sellPart then 
+                sellPart, sellPrompt = findNearestTargetToPos("Smuggle", lastBuyPos) 
+            end
+
+            if sellPart then
+                getInVehicle()
+                if goToTarget(sellPart) then
+                    local sellAttempts = 0
+                    while isRunning and getItemCount(CONFIG.ItemName) > 0 and sellAttempts < 35 do
+                        interactWith(sellPart, sellPrompt)
+                        task.wait(0.08)
+                        sellAttempts = sellAttempts + 1
+                    end
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        if not isRunning then break end
+        processWaypoints(postSellWaypoints, "Post-Sell Route")
+        if not isRunning then break end
+
+        -- 3. LAUNDER LOGIC
+        if autoLaunder then
+            local launderPart, launderPrompt = findTarget(CONFIG.LaunderName)
+            if launderPart then
+                getInVehicle()
+                if goToTarget(launderPart) then
+                    local launderAttempts = 0
+                    while isRunning and getProcessableItemCount() > 0 and launderAttempts < 40 do
+                        interactWith(launderPart, launderPrompt)
+                        task.wait(0.08)
+                        launderAttempts = launderAttempts + 1
+                    end
+                    task.wait(0.1)
+                    getInVehicle()
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+
+        task.wait(0.1)
+    end
+    clearWaylines()
+end
+
+print("✅ RORD Auto Farm loaded successfully")
